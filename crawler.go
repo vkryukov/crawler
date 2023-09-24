@@ -144,7 +144,7 @@ func processDirectory(root string, dbPath string, stats *ProcessStats, mu *sync.
 		logExclusionPatternToDB := func(pattern string) {
 			_, err = db.Exec(`
 			INSERT OR REPLACE INTO filedata(filepath, filetype, creation_time, modification_time, filesize, skipped, is_dir, exclusion_pattern)
-			VALUES (?, ?, ?, ?, ?, ?)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		`, path, fileType, creationTime, modificationTime, fileSize, 1, info.IsDir(), pattern)
 			if err != nil {
 				log.Println("Error inserting into database:", err)
@@ -188,6 +188,30 @@ func processDirectory(root string, dbPath string, stats *ProcessStats, mu *sync.
 		if err != nil {
 			log.Println("Error walking file:", err)
 			return nil
+		}
+
+		// Check if file is a symbolic link pointing to a directory
+		linfo, err := os.Lstat(path)
+		if err != nil {
+			log.Println("Error getting Lstat:", err)
+			return nil
+		}
+		if linfo.Mode()&os.ModeSymlink != 0 {
+			targetPath, err := os.Readlink(path)
+			if err != nil {
+				log.Println("Error reading symbolic link:", err)
+				return nil
+			}
+
+			targetInfo, err := os.Stat(targetPath)
+			if err != nil {
+				log.Println("Error getting Stat of target:", err)
+				return nil
+			}
+			if targetInfo.IsDir() {
+				// Handle case when symbolic link points to a directory
+				return nil
+			}
 		}
 
 		if info.IsDir() {
