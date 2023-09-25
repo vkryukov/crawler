@@ -306,7 +306,7 @@ func getFileInfo(path string, info os.FileInfo, followSymlinks bool) (string, in
 			}
 			info, err = os.Stat(target)
 			if err != nil {
-				return "", 0, "", "", false, false, "", err
+				return "", 0, "", "", false, false, "", fmt.Errorf("error following symlink in %s: %w", path, err)
 			}
 		} else {
 			target, err = os.Readlink(path)
@@ -315,7 +315,7 @@ func getFileInfo(path string, info os.FileInfo, followSymlinks bool) (string, in
 			}
 			info, err = os.Lstat(target)
 			if err != nil {
-				return "", 0, "", "", false, false, "", err
+				return "", 0, "", "", false, false, "", fmt.Errorf("error following symlink in %s: %w", path, err)
 			}
 		}
 	} else {
