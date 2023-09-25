@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -213,38 +214,12 @@ func processDirectory(root string, dbPath string, logFileName string, stats *Pro
 			}
 		}
 
-		// Check against exclusion patterns
-		for _, pattern := range excludePatterns {
-			if strings.HasPrefix(pattern, "/") {
-				// Treat as an absolute path pattern
-				matched, _ := filepath.Match(pattern, path)
-				if matched {
-					logExclusionPatternToDB(pattern)
-					if isDir {
-						return filepath.SkipDir
-					}
-					return nil
-				}
-			} else if strings.Contains(pattern, "/") {
-				// Treat as a relative multi-folder pattern
-				if strings.Contains(path, pattern) {
-					logExclusionPatternToDB(pattern)
-					if isDir {
-						return filepath.SkipDir
-					}
-					return nil
-				}
-			} else {
-				// Treat as a simple wildcard match on file or directory name
-				matched, _ := filepath.Match(pattern, filepath.Base(path))
-				if matched {
-					logExclusionPatternToDB(pattern)
-					if isDir {
-						return filepath.SkipDir
-					}
-					return nil
-				}
+		if match, pattern := isExcluded(path, excludePatterns); match {
+			logExclusionPatternToDB(pattern)
+			if isDir {
+				return filepath.SkipDir
 			}
+			return nil
 		}
 
 		if isDir {
@@ -302,6 +277,58 @@ func processDirectory(root string, dbPath string, logFileName string, stats *Pro
 	}
 
 	return filepath.Walk(root, walkFn)
+}
+
+// isExcluded checks if the path matches any of the exclusion patterns, and returns true if it does along with the matching pattern
+func isExcluded(path string, excludePatterns []string) (bool, string) {
+	for _, pattern := range excludePatterns {
+		matched := filepathMatch(pattern, path)
+		if matched {
+			return matched, pattern
+		}
+	}
+	return false, ""
+}
+
+func filepathMatch(pattern, filePath string) bool {
+	// Case 1: Simple pattern, e.g., "*.txt"
+	if !strings.Contains(pattern, "/") {
+		match, _ := path.Match(pattern, filepath.Base(filePath))
+		return match
+	}
+
+	filePathComponents := strings.Split(filePath, "/")
+	if filePathComponents[0] == "" {
+		filePathComponents = filePathComponents[1:]
+	}
+	patternComponents := strings.Split(pattern, "/")
+
+	// Case 2: Pattern starts with a slash, e.g., "/tmp/*"
+	if patternComponents[0] == "" {
+		patternComponents = patternComponents[1:]
+		return fileComponentsMatch(patternComponents, filePathComponents)
+	}
+
+	// Case 3: everything else
+	for i := 0; i <= len(filePathComponents)-len(patternComponents); i++ {
+		if fileComponentsMatch(patternComponents, filePathComponents[i:]) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func fileComponentsMatch(patternComponents, filePathComponents []string) bool {
+	if len(filePathComponents) < len(patternComponents) {
+		return false
+	}
+	for i := range patternComponents {
+		if matched, _ := path.Match(patternComponents[i], filePathComponents[i]); !matched {
+			return false
+		}
+	}
+	return true
 }
 
 func getFileInfo(path string, info os.FileInfo, followSymlinks bool) (string, int64, string, string, bool, bool, string, error) {
