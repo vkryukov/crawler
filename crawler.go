@@ -85,9 +85,11 @@ func main() {
 	multiWriter := io.MultiWriter(logFile, os.Stdout)
 	log.SetOutput(multiWriter)
 
+	visitedSymlinks := make(map[string]struct{})
+
 	// Process each directory
 	for _, root := range flag.Args() {
-		err := processDirectory(root, dbFile, logFileName, stats, excludePatterns, followSymlinks)
+		err := processDirectory(root, dbFile, logFileName, stats, excludePatterns, followSymlinks, visitedSymlinks)
 		if err != nil {
 			fmt.Printf("Error processing directory %s: %v\n", root, err)
 		}
@@ -122,7 +124,7 @@ func readExcludePatterns(filename string) []string {
 }
 
 // processDirectory walks the directory tree and processes each file
-func processDirectory(root string, dbPath string, logFileName string, stats *ProcessStats, excludePatterns []string, followSymlinks bool) error {
+func processDirectory(root string, dbPath string, logFileName string, stats *ProcessStats, excludePatterns []string, followSymlinks bool, visitedSymlinks map[string]struct{}) error {
 	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
 		log.Println("Error opening database:", err)
@@ -232,6 +234,11 @@ func processDirectory(root string, dbPath string, logFileName string, stats *Pro
 
 		if isDir {
 			if isSymlink && followSymlinks {
+				if _, alreadyVisited := visitedSymlinks[target]; alreadyVisited {
+					log.Println("Symlink loop detected:", path, "->", target)
+					return nil
+				}
+				visitedSymlinks[target] = struct{}{}
 				log.Println("Following symlink:", path, "->", target)
 				return filepath.Walk(target, walkFn)
 			} else {
