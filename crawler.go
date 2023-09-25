@@ -19,8 +19,17 @@ import (
 
 // ProcessStats holds processing statistics
 type ProcessStats struct {
-	FilesProcessed int64
-	BytesProcessed int64
+	FilesProcessed    int64
+	BytesProcessed    int64
+	lastProcessedFile atomic.Value // Stores string
+}
+
+func (stats *ProcessStats) SetLastProcessedFile(fileName string) {
+	stats.lastProcessedFile.Store(fileName)
+}
+
+func (stats *ProcessStats) GetLastProcessedFile() string {
+	return stats.lastProcessedFile.Load().(string)
 }
 
 func main() {
@@ -63,6 +72,7 @@ func main() {
 				speed := float64(bytes) / elapsed.Seconds() / 1e6 // in MB/s
 
 				fmt.Printf("Elapsed Time: %02d:%02d:%02d, Files processed: %d, MB processed: %.2f, Speed: %.2f MB/s\n", h, m, s, files, float64(bytes)/1e6, speed)
+				fmt.Println("Last processed file:", stats.GetLastProcessedFile())
 			}
 		}()
 	}
@@ -161,6 +171,11 @@ func processDirectory(root string, dbPath string, logFileName string, stats *Pro
 			return nil
 		}
 
+		if info.Mode()&os.ModeNamedPipe != 0 {
+			// skip the FIFO
+			return nil
+		}
+
 		// Never walk the database file or the log file
 		absPath, err := filepath.Abs(path)
 		if err != nil {
@@ -249,6 +264,7 @@ func processDirectory(root string, dbPath string, logFileName string, stats *Pro
 		// Update statistics
 		atomic.AddInt64(&stats.FilesProcessed, 1)
 		atomic.AddInt64(&stats.BytesProcessed, fileSize)
+		stats.SetLastProcessedFile(path)
 
 		// Check if file already exists in database
 		var storedModTime string
