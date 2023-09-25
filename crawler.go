@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -46,7 +45,6 @@ func main() {
 
 	// Initialize statistics and a mutex for thread-safe access
 	stats := &ProcessStats{}
-	var mu sync.Mutex
 
 	// Start a goroutine for printing status, unless printInterval is negative
 	if printInterval > 0 {
@@ -55,10 +53,8 @@ func main() {
 			startTime := time.Now()
 
 			for range ticker.C {
-				mu.Lock()
 				files := atomic.LoadInt64(&stats.FilesProcessed)
 				bytes := atomic.LoadInt64(&stats.BytesProcessed)
-				mu.Unlock()
 
 				elapsed := time.Since(startTime)
 				h := int(elapsed.Hours())
@@ -91,14 +87,14 @@ func main() {
 
 	// Process each directory
 	for _, root := range flag.Args() {
-		err := processDirectory(root, dbFile, logFileName, stats, &mu, excludePatterns, followSymlinks)
+		err := processDirectory(root, dbFile, logFileName, stats, excludePatterns, followSymlinks)
 		if err != nil {
 			fmt.Printf("Error processing directory %s: %v\n", root, err)
 		}
 	}
 }
 
-// reaadExcludePatterns reads the exclude file and returns a slice of patterns
+// readExcludePatterns reads the exclude file and returns a slice of patterns
 func readExcludePatterns(filename string) []string {
 	file, err := os.Open(filename)
 	if err != nil {
@@ -126,7 +122,7 @@ func readExcludePatterns(filename string) []string {
 }
 
 // processDirectory walks the directory tree and processes each file
-func processDirectory(root string, dbPath string, logFileName string, stats *ProcessStats, mu *sync.Mutex, excludePatterns []string, followSymlinks bool) error {
+func processDirectory(root string, dbPath string, logFileName string, stats *ProcessStats, excludePatterns []string, followSymlinks bool) error {
 	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
 		log.Println("Error opening database:", err)
@@ -244,10 +240,8 @@ func processDirectory(root string, dbPath string, logFileName string, stats *Pro
 		}
 
 		// Update statistics
-		mu.Lock()
 		atomic.AddInt64(&stats.FilesProcessed, 1)
 		atomic.AddInt64(&stats.BytesProcessed, fileSize)
-		mu.Unlock()
 
 		// Check if file already exists in database
 		var storedModTime string
