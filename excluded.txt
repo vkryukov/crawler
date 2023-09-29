@@ -1,0 +1,33 @@
+.git
+
+# Xcode and development binaries
+*.app
+*.dmg
+*.xcodeproj
+
+# Temporary files created by macOS
+*.lock
+*.tmp
+*.swp
+
+# macOS system files
+.DS_Store
+.Trashes
+.Trash
+.Spotlight-V100
+.fseventsd
+.AppleDB
+.AppleDesktop
+.AppleDouble
+
+# Synology files
+@eaDir
+/@appstore
+.syno
+synoquota.db
+
+# User Library files
+/Users/*/Library
+
+# Photo libraries
+*.photoslibrary
