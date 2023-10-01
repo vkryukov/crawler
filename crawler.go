@@ -38,11 +38,13 @@ func main() {
 	var exclusionFile string
 	var logFileName string
 	var printInterval int
+	var printErrors bool
 	var followSymlinks bool
 
 	flag.StringVar(&dbFile, "db", "index.sqlite", "Path to the SQLite database file")
 	flag.StringVar(&exclusionFile, "exclude", "", "Path to the exclusion file")
-	flag.StringVar(&logFileName, "log", "errors.log", "Path to the log file")
+	flag.StringVar(&logFileName, "log", "errors.log", "Path to the errors log file")
+	flag.BoolVar(&printErrors, "print-errors", false, "Print errors to stdout in addtion to the log file")
 	flag.IntVar(&printInterval, "interval", 5, "Time interval for printing statistics in seconds")
 	flag.BoolVar(&followSymlinks, "follow", false, "Follow symbolic links")
 	flag.Parse()
@@ -92,9 +94,14 @@ func main() {
 	}
 	defer logFile.Close()
 
-	// Log both to the file and stdout
-	multiWriter := io.MultiWriter(logFile, os.Stdout)
-	log.SetOutput(multiWriter)
+	if printErrors {
+		// Log both to the file and stdout
+		multiWriter := io.MultiWriter(logFile, os.Stdout)
+		log.SetOutput(multiWriter)
+	} else {
+		// Log only to the file
+		log.SetOutput(logFile)
+	}
 
 	visitedSymlinks := make(map[string]struct{})
 
@@ -155,6 +162,17 @@ func processDirectory(root string, dbPath string, logFileName string, stats *Pro
 		return err
 	}
 
+	absDBPath, err := filepath.Abs(dbPath)
+	if err != nil {
+		log.Println("Error getting absolute path for database path:", dbPath, err)
+		return nil
+	}
+	absLogFileName, err := filepath.Abs(logFileName)
+	if err != nil {
+		log.Println("Error getting absolute path for log file name:", logFileName, err)
+		return nil
+	}
+
 	var walkFn func(string, os.FileInfo, error) error
 
 	walkFn = func(path string, info os.FileInfo, err error) error {
@@ -169,22 +187,7 @@ func processDirectory(root string, dbPath string, logFileName string, stats *Pro
 		}
 
 		// Never walk the database file or the log file
-		absPath, err := filepath.Abs(path)
-		if err != nil {
-			log.Println("Error getting absolute path for path:", path, err)
-			return nil
-		}
-		absDBPath, err := filepath.Abs(dbPath)
-		if err != nil {
-			log.Println("Error getting absolute path for database path:", dbPath, err)
-			return nil
-		}
-		absLogFileName, err := filepath.Abs(logFileName)
-		if err != nil {
-			log.Println("Error getting absolute path for log file name:", logFileName, err)
-			return nil
-		}
-		if absPath == absDBPath || absPath == absLogFileName {
+		if path == absDBPath || path == absLogFileName {
 			return nil
 		}
 
