@@ -143,24 +143,9 @@ func processDirectory(root string, dbPath string, logFileName string, stats *Pro
 	}
 	defer db.Close()
 
-	_, err = db.Exec(`
-	CREATE TABLE IF NOT EXISTS files (
-		filepath TEXT PRIMARY KEY,
-		filetype TEXT,
-		creation_time TEXT,
-		modification_time TEXT,
-		hash TEXT,
-		filesize INTEGER,
-		skipped INTEGER DEFAULT 0,
-		dir INTEGER DEFAULT 0,
-		symlink INTEGER DEFAULT 0,
-		followed_symlink INTEGER DEFAULT 0,
-		target TEXT DEFAULT NULL,
-		exclusion_pattern TEXT DEFAULT NULL
-	);
-	`)
+	err = createSchema(db)
 	if err != nil {
-		log.Println("Error creating table:", err)
+		log.Println("Error creating schema:", err)
 		return err
 	}
 
@@ -212,7 +197,7 @@ func processDirectory(root string, dbPath string, logFileName string, stats *Pro
 
 		logExclusionPatternToDB := func(pattern string) {
 			_, err = db.Exec(`
-			INSERT OR REPLACE INTO files(filepath, filetype, creation_time, modification_time, filesize, skipped, dir, symlink, exclusion_pattern)
+			INSERT OR REPLACE INTO files(path, type, creation_time, modification_time, size, skipped, dir, symlink, exclusion_pattern)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`, path, fileType, creationTime, modificationTime, fileSize, 1, isDir, isSymlink, pattern)
 			if err != nil {
@@ -249,7 +234,7 @@ func processDirectory(root string, dbPath string, logFileName string, stats *Pro
 
 		// Check if file already exists in database
 		var storedModTime string
-		err = db.QueryRow("SELECT modification_time FROM files WHERE filepath=?", path).Scan(&storedModTime)
+		err = db.QueryRow("SELECT modification_time FROM files WHERE path=?", path).Scan(&storedModTime)
 		if err == nil && storedModTime == modificationTime {
 			return nil
 		}
@@ -273,7 +258,7 @@ func processDirectory(root string, dbPath string, logFileName string, stats *Pro
 			target = ""
 		}
 		_, err = db.Exec(`
-			INSERT OR REPLACE INTO files(filepath, filetype, creation_time, modification_time, hash, filesize, symlink, followed_symlink, target)
+			INSERT OR REPLACE INTO files(path, type, creation_time, modification_time, hash, size, symlink, followed_symlink, target)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`, path, fileType, creationTime, modificationTime, hashValue, fileSize, isSymlink, followSymlinks, target)
 		if err != nil {
@@ -283,6 +268,26 @@ func processDirectory(root string, dbPath string, logFileName string, stats *Pro
 	}
 
 	return filepath.Walk(root, walkFn)
+}
+
+func createSchema(db *sql.DB) error {
+	_, err := db.Exec(`
+	CREATE TABLE IF NOT EXISTS files (
+		path TEXT PRIMARY KEY,
+		type TEXT,
+		creation_time TEXT,
+		modification_time TEXT,
+		hash TEXT,
+		size INTEGER,
+		skipped INTEGER DEFAULT 0,
+		dir INTEGER DEFAULT 0,
+		symlink INTEGER DEFAULT 0,
+		followed_symlink INTEGER DEFAULT 0,
+		target TEXT DEFAULT NULL,
+		exclusion_pattern TEXT DEFAULT NULL
+	);
+	`)
+	return err
 }
 
 // isExcluded checks if the path matches any of the exclusion patterns, and returns true if it does along with the matching pattern
