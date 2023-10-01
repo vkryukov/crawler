@@ -164,6 +164,12 @@ func processDirectory(root string, dbPath string, logFileName string, stats *Pro
 		return err
 	}
 
+	root, err = filepath.Abs(root)
+	if err != nil {
+		log.Println("Error getting absolute path for root:", root, err)
+		return err
+	}
+
 	var walkFn func(string, os.FileInfo, error) error
 
 	walkFn = func(path string, info os.FileInfo, err error) error {
