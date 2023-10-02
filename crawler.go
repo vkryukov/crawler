@@ -95,7 +95,12 @@ func main() {
 		fmt.Println("Couldn't open log file:", err)
 		return
 	}
-	defer logFile.Close()
+	defer func(logFile *os.File) {
+		err := logFile.Close()
+		if err != nil {
+			log.Println("Error closing log file:", err)
+		}
+	}(logFile)
 
 	if printErrors {
 		// Log both to the file and stdout
@@ -124,7 +129,12 @@ func readExcludePatterns(filename string) []string {
 		log.Println("Warning: Could not open exclude file,", err)
 		return nil
 	}
-	defer file.Close()
+	defer func(file *os.File) {
+		err := file.Close()
+		if err != nil {
+			log.Println("Error closing exclude file:", err)
+		}
+	}(file)
 
 	var patterns []string
 	scanner := bufio.NewScanner(file)
@@ -151,7 +161,12 @@ func processDirectory(root string, dbPath string, logFileName string, stats *Pro
 		log.Println("Error opening database:", err)
 		return err
 	}
-	defer db.Close()
+	defer func(db *sql.DB) {
+		err := db.Close()
+		if err != nil {
+			log.Println("Error closing database:", err)
+		}
+	}(db)
 
 	err = createSchema(db)
 	if err != nil {
@@ -271,7 +286,12 @@ func processDirectory(root string, dbPath string, logFileName string, stats *Pro
 			writeError(path, "opening file", err)
 			return nil
 		}
-		defer file.Close()
+		defer func(file *os.File) {
+			err := file.Close()
+			if err != nil {
+				log.Println("Error closing file:", err)
+			}
+		}(file)
 
 		hash := sha256.New()
 		_, err = io.Copy(hash, file)
