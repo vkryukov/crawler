@@ -175,6 +175,16 @@ func processDirectory(root string, dbPath string, logFileName string, stats *Pro
 		return nil
 	}
 
+	writeError := func(path string, msg string, err error) {
+		_, err = db.Exec(`
+		INSERT OR REPLACE INTO files(path, error)
+		VALUES (?, ?)
+		`, path, fmt.Sprintf("%s: %s", msg, err))
+		if err != nil {
+			log.Println("Error inserting into database:", err)
+		}
+	}
+
 	var walkFn func(string, os.FileInfo, error) error
 
 	walkFn = func(path string, info os.FileInfo, err error) error {
@@ -183,8 +193,9 @@ func processDirectory(root string, dbPath string, logFileName string, stats *Pro
 			return nil
 		}
 
+		// skip the FIFO
 		if info.Mode()&os.ModeNamedPipe != 0 {
-			// skip the FIFO
+			writeError(path, "FIFO", nil)
 			return nil
 		}
 
@@ -205,22 +216,18 @@ func processDirectory(root string, dbPath string, logFileName string, stats *Pro
 		// Get file metadata
 		fileType, fileSize, creationTime, modificationTime, isDir, isSymlink, target, err := getFileInfo(path, info, followSymlinks)
 		if err != nil {
-			log.Println("Error getting file info:", err)
+			writeError(path, "getting file info", err)
 			return nil
 		}
 
-		logExclusionPatternToDB := func(pattern string) {
+		if match, pattern := isExcluded(path, excludePatterns); match {
 			_, err = db.Exec(`
 			INSERT OR REPLACE INTO files(path, type, creation_time, modification_time, size, skipped, dir, symlink, exclusion_pattern)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`, path, fileType, creationTime, modificationTime, fileSize, 1, isDir, isSymlink, pattern)
+			`, path, fileType, creationTime, modificationTime, fileSize, 1, isDir, isSymlink, pattern)
 			if err != nil {
 				log.Println("Error inserting into database:", err)
 			}
-		}
-
-		if match, pattern := isExcluded(path, excludePatterns); match {
-			logExclusionPatternToDB(pattern)
 			if isDir {
 				return filepath.SkipDir
 			}
@@ -255,7 +262,7 @@ func processDirectory(root string, dbPath string, logFileName string, stats *Pro
 
 		file, err := os.Open(target)
 		if err != nil {
-			log.Println("Error opening file:", err)
+			writeError(path, "opening file", err)
 			return nil
 		}
 		defer file.Close()
@@ -263,7 +270,7 @@ func processDirectory(root string, dbPath string, logFileName string, stats *Pro
 		hash := sha256.New()
 		_, err = io.Copy(hash, file)
 		if err != nil {
-			log.Println("Error hashing file:", err)
+			writeError(path, "hashing file", err)
 			return nil
 		}
 		hashValue := fmt.Sprintf("%x", hash.Sum(nil))
