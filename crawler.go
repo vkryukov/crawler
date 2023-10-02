@@ -45,7 +45,7 @@ func main() {
 	flag.StringVar(&dbFile, "db", "index.sqlite", "Path to the SQLite database file")
 	flag.StringVar(&exclusionFile, "exclude", "", "Path to the exclusion file")
 	flag.StringVar(&logFileName, "log", "errors.log", "Path to the errors log file")
-	flag.BoolVar(&printErrors, "print-errors", false, "Print errors to stdout in addtion to the log file")
+	flag.BoolVar(&printErrors, "print-errors", false, "Print errors to stdout in addition to the log file")
 	flag.IntVar(&printInterval, "interval", 5, "Time interval for printing statistics in seconds")
 	flag.BoolVar(&followSymlinks, "follow", false, "Follow symbolic links")
 	flag.BoolVar(&retryErrors, "retry", false, "Retry files that previously caused errors")
