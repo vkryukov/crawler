@@ -37,6 +37,7 @@ func (stats *ProcessStats) GetLastProcessedFile() string {
 }
 
 func main() {
+	// Process command line arguments
 	var dbFile string
 	var exclusionFile string
 	var logFileName string
@@ -60,21 +61,46 @@ func main() {
 		return
 	}
 
+	// Initialize logging
+	logFileName, err := filepath.Abs(logFileName)
+	if err != nil {
+		fmt.Println("Error getting absolute path for log file name:", logFileName, err)
+		os.Exit(1)
+	}
+	logFile, err := os.OpenFile(logFileName, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0666)
+	if err != nil {
+		fmt.Println("Couldn't open log file:", err)
+		os.Exit(1)
+	}
+	defer func(logFile *os.File) {
+		err := logFile.Close()
+		if err != nil {
+			fmt.Println("Error closing log file:", err)
+		}
+	}(logFile)
+
+	if printErrors {
+		// Log both to the file and stdout
+		multiWriter := io.MultiWriter(logFile, os.Stdout)
+		log.SetOutput(multiWriter)
+	} else {
+		// Log only to the file
+		log.SetOutput(logFile)
+	}
+
 	// Initialize statistics and a mutex for thread-safe access
 	stats := &ProcessStats{}
 
-	// Initial placeholders
-	fmt.Println("Elapsed Time: --:--:--, Files processed: ----, MB processed: ----, Speed: ---- MB/s")
-	fmt.Println("Last processed file: ----------------")
-
-	maxWidth, err := getTerminalWidth()
-	if err != nil {
-		fmt.Println("Error getting terminal width:", err)
-		maxWidth = 80
-	}
-
 	// Start a goroutine for printing status, unless printInterval is negative
 	if printInterval > 0 {
+		fmt.Println("Elapsed Time: --:--:--, Files processed: ----, MB processed: ----, Speed: ---- MB/s")
+		fmt.Println("Last processed file: ----------------")
+		maxWidth, err := getTerminalWidth()
+		if err != nil {
+			fmt.Println("Error getting terminal width:", err)
+			maxWidth = 80
+		}
+
 		go func() {
 			ticker := time.NewTicker(time.Second * time.Duration(printInterval))
 			startTime := time.Now()
@@ -99,39 +125,43 @@ func main() {
 		}()
 	}
 
+	visitedSymlinks := make(map[string]struct{})
+
+	// Initialize database
+	dbFile, err = filepath.Abs(dbFile)
+	if err != nil {
+		log.Println("Error getting absolute path for database file:", dbFile, err)
+		os.Exit(1)
+	}
+	db, err := sql.Open("sqlite3", dbFile)
+	if err != nil {
+		log.Println("Error opening database:", err)
+		os.Exit(1)
+	}
+	defer func(db *sql.DB) {
+		err := db.Close()
+		if err != nil {
+			log.Println("Error closing database:", err)
+		}
+	}(db)
+	err = createSchema(db)
+	if err != nil {
+		log.Println("Error creating schema:", err)
+		os.Exit(1)
+	}
+
 	// Initialize exclusion patterns slice
 	var excludePatterns []string
 	if exclusionFile != "" {
 		excludePatterns = readExcludePatterns(exclusionFile)
 	}
 
-	// Open log file
-	logFile, err := os.OpenFile(logFileName, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0666)
-	if err != nil {
-		fmt.Println("Couldn't open log file:", err)
-		return
-	}
-	defer func(logFile *os.File) {
-		err := logFile.Close()
-		if err != nil {
-			log.Println("Error closing log file:", err)
-		}
-	}(logFile)
-
-	if printErrors {
-		// Log both to the file and stdout
-		multiWriter := io.MultiWriter(logFile, os.Stdout)
-		log.SetOutput(multiWriter)
-	} else {
-		// Log only to the file
-		log.SetOutput(logFile)
-	}
-
-	visitedSymlinks := make(map[string]struct{})
+	excludePatterns = append(excludePatterns, dbFile)
+	excludePatterns = append(excludePatterns, logFileName)
 
 	// Process each directory
 	for _, root := range flag.Args() {
-		err := processDirectory(root, dbFile, logFileName, stats, excludePatterns, followSymlinks, visitedSymlinks, retryErrors)
+		err := processDirectory(root, db, stats, excludePatterns, followSymlinks, visitedSymlinks, retryErrors)
 		if err != nil {
 			fmt.Printf("Error processing directory %s: %v\n", root, err)
 		}
@@ -196,40 +226,11 @@ func readExcludePatterns(filename string) []string {
 }
 
 // processDirectory walks the directory tree and processes each file
-func processDirectory(root string, dbPath string, logFileName string, stats *ProcessStats, excludePatterns []string, followSymlinks bool, visitedSymlinks map[string]struct{}, retryErrors bool) error {
-	db, err := sql.Open("sqlite3", dbPath)
-	if err != nil {
-		log.Println("Error opening database:", err)
-		return err
-	}
-	defer func(db *sql.DB) {
-		err := db.Close()
-		if err != nil {
-			log.Println("Error closing database:", err)
-		}
-	}(db)
-
-	err = createSchema(db)
-	if err != nil {
-		log.Println("Error creating schema:", err)
-		return err
-	}
-
-	root, err = filepath.Abs(root)
+func processDirectory(root string, db *sql.DB, stats *ProcessStats, excludePatterns []string, followSymlinks bool, visitedSymlinks map[string]struct{}, retryErrors bool) error {
+	root, err := filepath.Abs(root)
 	if err != nil {
 		log.Println("Error getting absolute path for root:", root, err)
 		return err
-	}
-
-	absDBPath, err := filepath.Abs(dbPath)
-	if err != nil {
-		log.Println("Error getting absolute path for database path:", dbPath, err)
-		return nil
-	}
-	absLogFileName, err := filepath.Abs(logFileName)
-	if err != nil {
-		log.Println("Error getting absolute path for log file name:", logFileName, err)
-		return nil
 	}
 
 	writeError := func(path string, msg string, err error) {
@@ -253,11 +254,6 @@ func processDirectory(root string, dbPath string, logFileName string, stats *Pro
 		// skip the FIFO
 		if info.Mode()&os.ModeNamedPipe != 0 {
 			writeError(path, "FIFO", nil)
-			return nil
-		}
-
-		// Never walk the database file or the log file
-		if path == absDBPath || path == absLogFileName {
 			return nil
 		}
 
