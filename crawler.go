@@ -14,7 +14,9 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"time"
+	"unsafe"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -47,7 +49,7 @@ func main() {
 	flag.StringVar(&exclusionFile, "exclude", "", "Path to the exclusion file")
 	flag.StringVar(&logFileName, "log", "errors.log", "Path to the errors log file")
 	flag.BoolVar(&printErrors, "print-errors", false, "Print errors to stdout in addition to the log file")
-	flag.IntVar(&printInterval, "interval", 5, "Time interval for printing statistics in seconds")
+	flag.IntVar(&printInterval, "interval", 1, "Time interval for printing statistics in seconds")
 	flag.BoolVar(&followSymlinks, "follow", false, "Follow symbolic links")
 	flag.BoolVar(&retryErrors, "retry", false, "Retry files that previously caused errors")
 	flag.Parse()
@@ -60,6 +62,16 @@ func main() {
 
 	// Initialize statistics and a mutex for thread-safe access
 	stats := &ProcessStats{}
+
+	// Initial placeholders
+	fmt.Println("Elapsed Time: --:--:--, Files processed: ----, MB processed: ----, Speed: ---- MB/s")
+	fmt.Println("Last processed file: ----------------")
+
+	maxWidth, err := getTerminalWidth()
+	if err != nil {
+		fmt.Println("Error getting terminal width:", err)
+		maxWidth = 80
+	}
 
 	// Start a goroutine for printing status, unless printInterval is negative
 	if printInterval > 0 {
@@ -77,8 +89,12 @@ func main() {
 				s := int(elapsed.Seconds()) % 60
 				speed := float64(bytes) / elapsed.Seconds() / 1e6 // in MB/s
 
+				fmt.Printf("\033[2A") // Move cursor 2 lines up
+				fmt.Printf("\033[K")  // Clear to the end of line
 				fmt.Printf("Elapsed Time: %02d:%02d:%02d, Files processed: %d, MB processed: %.2f, Speed: %.2f MB/s\n", h, m, s, files, float64(bytes)/1e6, speed)
-				fmt.Println("Last processed file:", stats.GetLastProcessedFile())
+				fmt.Printf("\033[K") // Clear to the end of line
+				shortFilename := truncateString(stats.GetLastProcessedFile(), maxWidth-21)
+				fmt.Println("Last processed file:", shortFilename)
 			}
 		}()
 	}
@@ -120,6 +136,31 @@ func main() {
 			fmt.Printf("Error processing directory %s: %v\n", root, err)
 		}
 	}
+}
+
+func truncateString(str string, num int) string {
+	if len(str) > num {
+		return str[0:num-3] + "..."
+	}
+	return str
+}
+func getTerminalWidth() (int, error) {
+	ws := &struct {
+		Row    uint16
+		Col    uint16
+		Xpixel uint16
+		Ypixel uint16
+	}{}
+
+	retCode, _, errno := syscall.Syscall(syscall.SYS_IOCTL,
+		uintptr(syscall.Stdout),
+		uintptr(syscall.TIOCGWINSZ),
+		uintptr(unsafe.Pointer(ws)))
+
+	if int(retCode) == -1 {
+		return 0, errno
+	}
+	return int(ws.Col), nil
 }
 
 // readExcludePatterns reads the exclude file and returns a slice of patterns
