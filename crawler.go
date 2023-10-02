@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"os"
 	"path"
@@ -43,7 +44,6 @@ func main() {
 	var logFileName string
 	var printInterval int
 	var printErrors bool
-	var followSymlinks bool
 	var retryErrors bool
 
 	flag.StringVar(&dbFile, "db", "index.sqlite", "Path to the SQLite database file")
@@ -51,7 +51,6 @@ func main() {
 	flag.StringVar(&logFileName, "log", "errors.log", "Path to the errors log file")
 	flag.BoolVar(&printErrors, "print-errors", false, "Print errors to stdout in addition to the log file")
 	flag.IntVar(&printInterval, "interval", 1, "Time interval for printing statistics in seconds")
-	flag.BoolVar(&followSymlinks, "follow", false, "Follow symbolic links")
 	flag.BoolVar(&retryErrors, "retry", false, "Retry files that previously caused errors")
 	flag.Parse()
 
@@ -125,8 +124,6 @@ func main() {
 		}()
 	}
 
-	visitedSymlinks := make(map[string]struct{})
-
 	// Initialize database
 	dbFile, err = filepath.Abs(dbFile)
 	if err != nil {
@@ -161,7 +158,7 @@ func main() {
 
 	// Process each directory
 	for _, root := range flag.Args() {
-		err := processDirectory(root, db, stats, excludePatterns, followSymlinks, visitedSymlinks, retryErrors)
+		err := processDirectory(root, db, stats, excludePatterns, retryErrors)
 		if err != nil {
 			fmt.Printf("Error processing directory %s: %v\n", root, err)
 		}
@@ -226,34 +223,31 @@ func readExcludePatterns(filename string) []string {
 }
 
 // processDirectory walks the directory tree and processes each file
-func processDirectory(root string, db *sql.DB, stats *ProcessStats, excludePatterns []string, followSymlinks bool, visitedSymlinks map[string]struct{}, retryErrors bool) error {
+func processDirectory(root string, db *sql.DB, stats *ProcessStats, excludePatterns []string, retryErrors bool) error {
 	root, err := filepath.Abs(root)
 	if err != nil {
 		log.Println("Error getting absolute path for root:", root, err)
 		return err
 	}
 
-	writeError := func(path string, msg string, err error) {
-		_, err = db.Exec(`
-		INSERT OR REPLACE INTO files(path, error)
-		VALUES (?, ?)
-		`, path, fmt.Sprintf("%s: %s", msg, err))
-		if err != nil {
-			log.Println("Error inserting into database:", err)
-		}
-	}
+	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		fileName := d.Name()
+		fileType := filepath.Ext(path)
+		isDir := d.IsDir()
+		var folderId int64
 
-	var walkFn func(string, os.FileInfo, error) error
-
-	walkFn = func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			log.Println("Error walking file:", err)
-			return nil
+		writeError := func(msg string, err error) {
+			_, err = db.Exec(`
+		INSERT OR REPLACE INTO files(path, name, type, dir, error, folder_id)
+		VALUES (?, ?, ?, ?, ?, ?)
+		`, path, fileName, fileType, isDir, fmt.Sprintf("%s: %s", msg, err), folderId)
+			if err != nil {
+				log.Println("Error inserting into database:", err)
+			}
 		}
 
-		// skip the FIFO
-		if info.Mode()&os.ModeNamedPipe != 0 {
-			writeError(path, "FIFO", nil)
+		if err != nil {
+			writeError("walking file:", err)
 			return nil
 		}
 
@@ -266,44 +260,57 @@ func processDirectory(root string, db *sql.DB, stats *ProcessStats, excludePatte
 			}
 		}
 
-		// Get file metadata
-		fileType, fileSize, creationTime, modificationTime, isDir, isSymlink, target, err := getFileInfo(path, info, followSymlinks)
-		if err != nil {
-			writeError(path, "getting file info", err)
+		folderId, err2 := getFolderID(db, filepath.Dir(path))
+		if err2 != nil {
+			writeError("getting folder ID", err2)
 			return nil
 		}
-		folderId, err := getFolderID(db, filepath.Dir(path))
+
+		info, err := d.Info()
 		if err != nil {
-			writeError(path, "getting folder ID", err)
+			writeError("getting file info", err)
+			return nil
+		}
+
+		// Get file metadata
+		fileSize := info.Size()
+		creationTime := getCreationTime(info)
+		modificationTime := info.ModTime().Format(time.RFC3339)
+		var symlink string
+		if info.Mode()&os.ModeSymlink != 0 {
+			symlink, err = os.Readlink(path)
+			if err != nil {
+				writeError("reading symlink", err)
+				return nil
+			}
+		}
+
+		if isDir {
+			_, err = db.Exec(`
+			INSERT OR REPLACE INTO files(path, name, type, dir, folder_id, creation_time, modification_time, size)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			`, path, fileName, fileType, isDir, folderId, creationTime, modificationTime, 0)
+			if err != nil {
+				log.Println("Error inserting into database:", err)
+			}
+			return nil
+		}
+
+		// skip the FIFO
+		if info.Mode()&os.ModeNamedPipe != 0 {
+			writeError("FIFO", nil)
 			return nil
 		}
 
 		if match, pattern := isExcluded(path, excludePatterns); match {
 			_, err = db.Exec(`
-			INSERT OR REPLACE INTO files(path, type, creation_time, modification_time, size, skipped, dir, symlink, exclusion_pattern, folder_id)
+			INSERT OR REPLACE INTO files(path, name, type, creation_time, modification_time, size, dir, symlink, exclusion_pattern, folder_id)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			`, path, fileType, creationTime, modificationTime, fileSize, 1, isDir, isSymlink, pattern, folderId)
+			`, path, fileName, fileType, creationTime, modificationTime, fileSize, isDir, symlink, pattern, folderId)
 			if err != nil {
 				log.Println("Error inserting into database:", err)
 			}
-			if isDir {
-				return filepath.SkipDir
-			}
 			return nil
-		}
-
-		if isDir {
-			if isSymlink && followSymlinks {
-				if _, alreadyVisited := visitedSymlinks[target]; alreadyVisited {
-					log.Println("Symlink loop detected:", path, "->", target)
-					return nil
-				}
-				visitedSymlinks[target] = struct{}{}
-				log.Println("Following symlink:", path, "->", target)
-				return filepath.Walk(target, walkFn)
-			} else {
-				return nil
-			}
 		}
 
 		// Update statistics
@@ -318,9 +325,20 @@ func processDirectory(root string, db *sql.DB, stats *ProcessStats, excludePatte
 			return nil
 		}
 
-		file, err := os.Open(target)
+		if symlink != "" {
+			_, err = db.Exec(`
+			INSERT OR REPLACE INTO files(path, name, type, creation_time, modification_time, size, dir, symlink, folder_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			`, path, fileName, fileType, creationTime, modificationTime, fileSize, isDir, symlink, folderId)
+			if err != nil {
+				log.Println("Error inserting into database:", err)
+			}
+			return nil
+		}
+
+		file, err := os.Open(path)
 		if err != nil {
-			writeError(path, "opening file", err)
+			writeError("opening file", err)
 			return nil
 		}
 		defer func(file *os.File) {
@@ -333,25 +351,20 @@ func processDirectory(root string, db *sql.DB, stats *ProcessStats, excludePatte
 		hash := sha256.New()
 		_, err = io.Copy(hash, file)
 		if err != nil {
-			writeError(path, "hashing file", err)
+			writeError("hashing file", err)
 			return nil
 		}
 		hashValue := fmt.Sprintf("%x", hash.Sum(nil))
 
-		if !isSymlink {
-			target = ""
-		}
 		_, err = db.Exec(`
-			INSERT OR REPLACE INTO files(path, type, creation_time, modification_time, hash, size, symlink, followed_symlink, target, folder_id)
+			INSERT OR REPLACE INTO files(path, name, type, creation_time, modification_time, size, dir, symlink, folder_id, hash)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`, path, fileType, creationTime, modificationTime, hashValue, fileSize, isSymlink, followSymlinks, target, folderId)
+			`, path, fileName, fileType, creationTime, modificationTime, fileSize, isDir, symlink, folderId, hashValue)
 		if err != nil {
 			log.Println("Error inserting into database:", err)
 		}
 		return nil
-	}
-
-	return filepath.Walk(root, walkFn)
+	})
 }
 
 // getFolderID returns the ID of the folder with the given path, or creates a new folder and returns its ID
@@ -366,27 +379,37 @@ func getFolderID(db *sql.DB, path string) (int64, error) {
 		return 0, err
 	}
 
-	res, err := db.Exec("INSERT INTO folders(path) VALUES (?)", path)
-	if err != nil {
-		return 0, err
+	if path == "/" {
+		res, err := db.Exec("INSERT INTO folders(path) VALUES (?)", path)
+		if err != nil {
+			return 0, err
+		}
+		return res.LastInsertId()
+	} else {
+		parentId, err := getFolderID(db, filepath.Dir(path))
+		if err != nil {
+			return 0, err
+		}
+		res, err := db.Exec("INSERT INTO folders(path, parent_id) VALUES (?, ?)", path, parentId)
+		if err != nil {
+			return 0, err
+		}
+		return res.LastInsertId()
 	}
-	return res.LastInsertId()
 }
 
 func createSchema(db *sql.DB) error {
 	_, err := db.Exec(`
 	CREATE TABLE IF NOT EXISTS files (
 		path TEXT PRIMARY KEY,
+		name TEXT,
 		type TEXT,
 		creation_time TEXT,
 		modification_time TEXT,
 		hash TEXT,
 		size INTEGER,
-		skipped INTEGER DEFAULT 0,
 		dir INTEGER DEFAULT 0,
-		symlink INTEGER DEFAULT 0,
-		followed_symlink INTEGER DEFAULT 0,
-		target TEXT DEFAULT NULL,
+		symlink TEXT DEFAULT '',
 		exclusion_pattern TEXT DEFAULT NULL,
 		error TEXT DEFAULT NULL,
 		folder_id INTEGER DEFAULT NULL REFERENCES folders(id)
@@ -455,47 +478,4 @@ func fileComponentsMatch(patternComponents, filePathComponents []string) bool {
 		}
 	}
 	return true
-}
-
-func getFileInfo(path string, info os.FileInfo, followSymlinks bool) (string, int64, string, string, bool, bool, string, error) {
-	var fileSize int64
-	var creationTime string
-	var modificationTime string
-	var isDir bool
-	var isSymlink bool
-	var target string
-	var err error
-
-	if info.Mode()&os.ModeSymlink != 0 {
-		isSymlink = true
-		if followSymlinks {
-			target, err = os.Readlink(path)
-			if err != nil {
-				return "", 0, "", "", false, false, "", err
-			}
-			info, err = os.Stat(target)
-			if err != nil {
-				return "", 0, "", "", false, false, "", fmt.Errorf("error following symlink in %s: %w", path, err)
-			}
-		} else {
-			target, err = os.Readlink(path)
-			if err != nil {
-				return "", 0, "", "", false, false, "", err
-			}
-			info, err = os.Lstat(target)
-			if err != nil {
-				return "", 0, "", "", false, false, "", fmt.Errorf("error following symlink in %s: %w", path, err)
-			}
-		}
-	} else {
-		target = path
-	}
-
-	fileType := filepath.Ext(path)
-	fileSize = info.Size()
-	isDir = info.IsDir()
-	creationTime = getCreationTime(info)
-	modificationTime = info.ModTime().Format(time.RFC3339)
-
-	return fileType, fileSize, creationTime, modificationTime, isDir, isSymlink, target, nil
 }
