@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"crypto/sha256"
 	"database/sql"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -219,12 +220,17 @@ func processDirectory(root string, dbPath string, logFileName string, stats *Pro
 			writeError(path, "getting file info", err)
 			return nil
 		}
+		folderId, err := getFolderID(db, filepath.Dir(path))
+		if err != nil {
+			writeError(path, "getting folder ID", err)
+			return nil
+		}
 
 		if match, pattern := isExcluded(path, excludePatterns); match {
 			_, err = db.Exec(`
-			INSERT OR REPLACE INTO files(path, type, creation_time, modification_time, size, skipped, dir, symlink, exclusion_pattern)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-			`, path, fileType, creationTime, modificationTime, fileSize, 1, isDir, isSymlink, pattern)
+			INSERT OR REPLACE INTO files(path, type, creation_time, modification_time, size, skipped, dir, symlink, exclusion_pattern, folder_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			`, path, fileType, creationTime, modificationTime, fileSize, 1, isDir, isSymlink, pattern, folderId)
 			if err != nil {
 				log.Println("Error inserting into database:", err)
 			}
@@ -279,9 +285,9 @@ func processDirectory(root string, dbPath string, logFileName string, stats *Pro
 			target = ""
 		}
 		_, err = db.Exec(`
-			INSERT OR REPLACE INTO files(path, type, creation_time, modification_time, hash, size, symlink, followed_symlink, target)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`, path, fileType, creationTime, modificationTime, hashValue, fileSize, isSymlink, followSymlinks, target)
+			INSERT OR REPLACE INTO files(path, type, creation_time, modification_time, hash, size, symlink, followed_symlink, target, folder_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, path, fileType, creationTime, modificationTime, hashValue, fileSize, isSymlink, followSymlinks, target, folderId)
 		if err != nil {
 			log.Println("Error inserting into database:", err)
 		}
@@ -289,6 +295,25 @@ func processDirectory(root string, dbPath string, logFileName string, stats *Pro
 	}
 
 	return filepath.Walk(root, walkFn)
+}
+
+// getFolderID returns the ID of the folder with the given path, or creates a new folder and returns its ID
+func getFolderID(db *sql.DB, path string) (int64, error) {
+	var id int64
+	err := db.QueryRow("SELECT id FROM folders WHERE path=?", path).Scan(&id)
+	if err == nil {
+		return id, nil
+	}
+
+	if !errors.Is(err, sql.ErrNoRows) {
+		return 0, err
+	}
+
+	res, err := db.Exec("INSERT INTO folders(path) VALUES (?)", path)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
 }
 
 func createSchema(db *sql.DB) error {
@@ -306,8 +331,17 @@ func createSchema(db *sql.DB) error {
 		followed_symlink INTEGER DEFAULT 0,
 		target TEXT DEFAULT NULL,
 		exclusion_pattern TEXT DEFAULT NULL,
-		error TEXT DEFAULT NULL
+		error TEXT DEFAULT NULL,
+		folder_id INTEGER DEFAULT NULL REFERENCES folders(id)
 	);
+
+	CREATE TABLE IF NOT EXISTS folders (
+		id INTEGER PRIMARY KEY,	    		
+	    path TEXT UNIQUE,
+	    parent_id INTEGER DEFAULT NULL
+	);
+
+
 	`)
 	return err
 }
