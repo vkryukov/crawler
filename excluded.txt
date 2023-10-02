@@ -31,3 +31,8 @@ synoquota.db
 
 # Photo libraries
 *.photoslibrary
+
+# Programming files
+.git/*
+venv/*
+node_modules/*
