@@ -355,6 +355,8 @@ func createSchema(db *sql.DB) error {
 		folder_id INTEGER DEFAULT NULL REFERENCES folders(id)
 	);
 
+	CREATE INDEX IF NOT EXISTS hash_idx ON files(hash);
+
 	CREATE TABLE IF NOT EXISTS folders (
 		id INTEGER PRIMARY KEY,	    		
 	    path TEXT UNIQUE,
