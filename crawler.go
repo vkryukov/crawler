@@ -40,6 +40,7 @@ func main() {
 	var printInterval int
 	var printErrors bool
 	var followSymlinks bool
+	var retryErrors bool
 
 	flag.StringVar(&dbFile, "db", "index.sqlite", "Path to the SQLite database file")
 	flag.StringVar(&exclusionFile, "exclude", "", "Path to the exclusion file")
@@ -47,6 +48,7 @@ func main() {
 	flag.BoolVar(&printErrors, "print-errors", false, "Print errors to stdout in addtion to the log file")
 	flag.IntVar(&printInterval, "interval", 5, "Time interval for printing statistics in seconds")
 	flag.BoolVar(&followSymlinks, "follow", false, "Follow symbolic links")
+	flag.BoolVar(&retryErrors, "retry", false, "Retry files that previously caused errors")
 	flag.Parse()
 
 	if len(flag.Args()) < 1 {
@@ -107,7 +109,7 @@ func main() {
 
 	// Process each directory
 	for _, root := range flag.Args() {
-		err := processDirectory(root, dbFile, logFileName, stats, excludePatterns, followSymlinks, visitedSymlinks)
+		err := processDirectory(root, dbFile, logFileName, stats, excludePatterns, followSymlinks, visitedSymlinks, retryErrors)
 		if err != nil {
 			fmt.Printf("Error processing directory %s: %v\n", root, err)
 		}
@@ -142,7 +144,7 @@ func readExcludePatterns(filename string) []string {
 }
 
 // processDirectory walks the directory tree and processes each file
-func processDirectory(root string, dbPath string, logFileName string, stats *ProcessStats, excludePatterns []string, followSymlinks bool, visitedSymlinks map[string]struct{}) error {
+func processDirectory(root string, dbPath string, logFileName string, stats *ProcessStats, excludePatterns []string, followSymlinks bool, visitedSymlinks map[string]struct{}, retryErrors bool) error {
 	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
 		log.Println("Error opening database:", err)
@@ -189,6 +191,15 @@ func processDirectory(root string, dbPath string, logFileName string, stats *Pro
 		// Never walk the database file or the log file
 		if path == absDBPath || path == absLogFileName {
 			return nil
+		}
+
+		// Skip files that previously caused errors
+		if !retryErrors {
+			var storedError string
+			err = db.QueryRow("SELECT error FROM files WHERE path=? AND error IS NOT NULL", path).Scan(&storedError)
+			if err == nil {
+				return nil
+			}
 		}
 
 		// Get file metadata
@@ -287,7 +298,8 @@ func createSchema(db *sql.DB) error {
 		symlink INTEGER DEFAULT 0,
 		followed_symlink INTEGER DEFAULT 0,
 		target TEXT DEFAULT NULL,
-		exclusion_pattern TEXT DEFAULT NULL
+		exclusion_pattern TEXT DEFAULT NULL,
+		error TEXT DEFAULT NULL
 	);
 	`)
 	return err
