@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	_ "github.com/mattn/go-sqlite3"
 	"io"
 	"io/fs"
 	"log"
@@ -14,12 +15,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
-	"syscall"
 	"time"
-	"unsafe"
-
-	_ "github.com/mattn/go-sqlite3"
 )
 
 func main() {
@@ -72,39 +68,15 @@ func main() {
 		log.SetOutput(logFile)
 	}
 
-	// Initialize statistics and a mutex for thread-safe access
-	stats := &ProcessStats{}
-
 	// Start a goroutine for printing status, unless printInterval is negative
+	stats := NewProcessStats()
 	if printInterval > 0 {
-		fmt.Println("Elapsed Time: --:--:--, Files processed: ----, MB processed: ----, Speed: ---- MB/s")
-		fmt.Println("Last processed file: ----------------")
-		maxWidth, err := getTerminalWidth()
-		if err != nil {
-			fmt.Println("Error getting terminal width:", err)
-			maxWidth = 80
-		}
-
 		go func() {
 			ticker := time.NewTicker(time.Second * time.Duration(printInterval))
 			startTime := time.Now()
-
+			stats.Print(startTime)
 			for range ticker.C {
-				files := atomic.LoadInt64(&stats.FilesProcessed)
-				bytes := atomic.LoadInt64(&stats.BytesProcessed)
-
-				elapsed := time.Since(startTime)
-				h := int(elapsed.Hours())
-				m := int(elapsed.Minutes()) % 60
-				s := int(elapsed.Seconds()) % 60
-				speed := float64(bytes) / elapsed.Seconds() / 1e6 // in MB/s
-
-				fmt.Printf("\033[2A") // Move cursor 2 lines up
-				fmt.Printf("\033[K")  // Clear to the end of line
-				fmt.Printf("Elapsed Time: %02d:%02d:%02d, Files processed: %d, MB processed: %.2f, Speed: %.2f MB/s\n", h, m, s, files, float64(bytes)/1e6, speed)
-				fmt.Printf("\033[K") // Clear to the end of line
-				shortFilename := truncateString(stats.GetLastProcessedFile(), maxWidth-21)
-				fmt.Println("Last processed file:", shortFilename)
+				stats.Print(startTime)
 			}
 		}()
 	}
@@ -148,31 +120,6 @@ func main() {
 			fmt.Printf("Error processing directory %s: %v\n", root, err)
 		}
 	}
-}
-
-func truncateString(str string, num int) string {
-	if len(str) > num {
-		return str[0:num-3] + "..."
-	}
-	return str
-}
-func getTerminalWidth() (int, error) {
-	ws := &struct {
-		Row    uint16
-		Col    uint16
-		Xpixel uint16
-		Ypixel uint16
-	}{}
-
-	retCode, _, errno := syscall.Syscall(syscall.SYS_IOCTL,
-		uintptr(syscall.Stdout),
-		uintptr(syscall.TIOCGWINSZ),
-		uintptr(unsafe.Pointer(ws)))
-
-	if int(retCode) == -1 {
-		return 0, errno
-	}
-	return int(ws.Col), nil
 }
 
 // readExcludePatterns reads the exclude file and returns a slice of patterns
@@ -299,9 +246,7 @@ func processDirectory(root string, db *sql.DB, stats *ProcessStats, excludePatte
 		}
 
 		// Update statistics
-		atomic.AddInt64(&stats.FilesProcessed, 1)
-		atomic.AddInt64(&stats.BytesProcessed, fileSize)
-		stats.SetLastProcessedFile(path)
+		stats.Update(path, fileSize)
 
 		// Check if file already exists in database
 		var storedModTime string
