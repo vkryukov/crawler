@@ -1,8 +1,10 @@
-.git
+# Repositories
+.git/
+svn/
 
 # Xcode and development binaries
-*.app
-*.dmg
+*.app/
+*.dmg/
 *.xcodeproj
 
 # Temporary files created by macOS
@@ -12,8 +14,8 @@
 
 # macOS system files
 .DS_Store
-.Trashes
-.Trash
+.Trashes/
+.Trash/
 .Spotlight-V100
 .fseventsd
 .AppleDB
@@ -21,18 +23,19 @@
 .AppleDouble
 
 # Synology files
-@eaDir
+@eaDir/
 /@appstore
-.syno
+.syno/
 synoquota.db
 
 # User Library files
-/Users/*/Library
+/Users/*/Library/
+Users/*/Applications/
 
 # Photo libraries
-*.photoslibrary
+*.photoslibrary/
 
 # Programming files
-.git/*
-venv/*
-node_modules/*
+venv/
+env/
+node_modules/

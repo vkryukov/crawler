@@ -440,6 +440,11 @@ func isExcluded(path string, excludePatterns []string) (bool, string) {
 }
 
 func filepathMatch(pattern, filePath string) bool {
+	// Patterns ending with / match both the directory and its contents
+	if strings.HasSuffix(pattern, "/") {
+		return filepathMatch(pattern[:len(pattern)-1], filePath) || filepathMatch(pattern+"*", filePath)
+	}
+
 	// Case 1: Simple pattern, e.g., "*.txt"
 	if !strings.Contains(pattern, "/") {
 		match, _ := path.Match(pattern, filepath.Base(filePath))

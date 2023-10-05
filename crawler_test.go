@@ -22,6 +22,13 @@ func TestFilepathMatch(t *testing.T) {
 		{"/a/*/b/*", "/a/x/b/d", true},             // Test matching a relative multi-folder pattern
 		{"/a/*/b/*", "/a/b/c/d", false},            // Test not matching any pattern with a subfolder
 		{"/logs/*.txt", "/a/logs/file.txt", false}, // Test not matching any pattern with a subfolder
+
+		// Patterns ending with a slash should  match both a directory and files under the directory
+		{".git/", "/a/.git/b", true},
+		{".git/", "/a/b/c/.git", true},
+		{"/Users/*/Library/", "/Users/username/Library", true},
+		{"/Users/*/Library/", "/Users/username/Library/Logs", true},
+		{"/Users/*/Library/", "/something/Users/username/Library/Logs/Logs", false},
 	}
 
 	for _, tc := range testCases {
