@@ -1,9 +1,7 @@
 package main
 
 import (
-	"crypto/sha256"
 	"database/sql"
-	"errors"
 	"flag"
 	"fmt"
 	_ "github.com/mattn/go-sqlite3"
@@ -128,197 +126,59 @@ func processDirectory(root string, db *sql.DB, stats *ProcessStats, excludePatte
 	}
 
 	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		fileName := d.Name()
-		fileType := filepath.Ext(path)
-		isDir := d.IsDir()
-		var folderId int64
-
-		writeError := func(msg string, err error) {
-			_, err = db.Exec(`
-		INSERT OR REPLACE INTO files(path, name, type, dir, error, folder_id)
-		VALUES (?, ?, ?, ?, ?, ?)
-		`, path, fileName, fileType, isDir, fmt.Sprintf("%s: %s", msg, err), folderId)
-			if err != nil {
-				log.Println("Error inserting into database:", err)
-			}
-		}
+		f := NewFileInfo(path, d)
 
 		if err != nil {
-			writeError("walking file:", err)
+			f.WriteError("walking file:", err, db)
 			return nil
 		}
 
 		// Skip files that previously caused errors
 		if !retryErrors {
 			var storedError string
-			err = db.QueryRow("SELECT error FROM files WHERE path=? AND error IS NOT NULL", path).Scan(&storedError)
+			err = db.QueryRow(
+				"SELECT error FROM files WHERE path=? AND error IS NOT NULL",
+				path).Scan(&storedError)
 			if err == nil {
 				return nil
 			}
 		}
 
-		folderId, err2 := getFolderID(db, filepath.Dir(path))
-		if err2 != nil {
-			writeError("getting folder ID", err2)
-			return nil
-		}
-
-		info, err := d.Info()
-		if err != nil {
-			writeError("getting file info", err)
-			return nil
-		}
-
-		// Get file metadata
-		fileSize := info.Size()
-		creationTime := getCreationTime(info)
-		modificationTime := info.ModTime().Format(time.RFC3339)
-		var symlink string
-		if info.Mode()&os.ModeSymlink != 0 {
-			symlink, err = os.Readlink(path)
-			if err != nil {
-				writeError("reading symlink", err)
-				return nil
-			}
-		}
-
-		if isDir {
-			_, err = db.Exec(`
-			INSERT OR REPLACE INTO files(path, name, type, dir, folder_id, creation_time, modification_time, size)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-			`, path, fileName, fileType, isDir, folderId, creationTime, modificationTime, 0)
-			if err != nil {
-				log.Println("Error inserting into database:", err)
-			}
+		if f.UpdateFolderId(db) != nil || f.UpdateInfo(db) != nil {
 			return nil
 		}
 
 		// skip the FIFO
-		if info.Mode()&os.ModeNamedPipe != 0 {
-			writeError("FIFO", nil)
+		if f.isFifo {
+			f.WriteError("FIFO", nil, db)
 			return nil
 		}
 
 		if match, pattern := isExcluded(path, excludePatterns); match {
-			_, err = db.Exec(`
-			INSERT OR REPLACE INTO files(path, name, type, creation_time, modification_time, size, dir, symlink, exclusion_pattern, folder_id)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			`, path, fileName, fileType, creationTime, modificationTime, fileSize, isDir, symlink, pattern, folderId)
-			if err != nil {
-				log.Println("Error inserting into database:", err)
-			}
+			f.ExclusionPattern = sql.NullString{String: pattern, Valid: true}
+			f.WriteToDatabase(db)
+			return nil
+		}
+
+		if f.Dir || f.Symlink.String != "" {
+			f.WriteToDatabase(db)
 			return nil
 		}
 
 		// Update statistics
-		stats.Update(path, fileSize)
+		stats.Update(path, f.Size)
 
 		// Check if file already exists in database
 		var storedModTime string
 		err = db.QueryRow("SELECT modification_time FROM files WHERE path=?", path).Scan(&storedModTime)
-		if err == nil && storedModTime == modificationTime {
+		if err == nil && storedModTime == f.ModificationTime.String {
 			return nil
 		}
 
-		if symlink != "" {
-			_, err = db.Exec(`
-			INSERT OR REPLACE INTO files(path, name, type, creation_time, modification_time, size, dir, symlink, folder_id)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-			`, path, fileName, fileType, creationTime, modificationTime, fileSize, isDir, symlink, folderId)
-			if err != nil {
-				log.Println("Error inserting into database:", err)
-			}
+		if f.UpdateHash(db) != nil {
 			return nil
 		}
-
-		file, err := os.Open(path)
-		if err != nil {
-			writeError("opening file", err)
-			return nil
-		}
-		defer func(file *os.File) {
-			err := file.Close()
-			if err != nil {
-				log.Println("Error closing file:", err)
-			}
-		}(file)
-
-		hash := sha256.New()
-		_, err = io.Copy(hash, file)
-		if err != nil {
-			writeError("hashing file", err)
-			return nil
-		}
-		hashValue := fmt.Sprintf("%x", hash.Sum(nil))
-
-		_, err = db.Exec(`
-			INSERT OR REPLACE INTO files(path, name, type, creation_time, modification_time, size, dir, symlink, folder_id, hash)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			`, path, fileName, fileType, creationTime, modificationTime, fileSize, isDir, symlink, folderId, hashValue)
-		if err != nil {
-			log.Println("Error inserting into database:", err)
-		}
+		f.WriteToDatabase(db)
 		return nil
 	})
-}
-
-// getFolderID returns the ID of the folder with the given path, or creates a new folder and returns its ID
-func getFolderID(db *sql.DB, path string) (int64, error) {
-	var id int64
-	err := db.QueryRow("SELECT id FROM folders WHERE path=?", path).Scan(&id)
-	if err == nil {
-		return id, nil
-	}
-
-	if !errors.Is(err, sql.ErrNoRows) {
-		return 0, err
-	}
-
-	if path == "/" {
-		res, err := db.Exec("INSERT INTO folders(path) VALUES (?)", path)
-		if err != nil {
-			return 0, err
-		}
-		return res.LastInsertId()
-	} else {
-		parentId, err := getFolderID(db, filepath.Dir(path))
-		if err != nil {
-			return 0, err
-		}
-		res, err := db.Exec("INSERT INTO folders(path, parent_id) VALUES (?, ?)", path, parentId)
-		if err != nil {
-			return 0, err
-		}
-		return res.LastInsertId()
-	}
-}
-
-func createSchema(db *sql.DB) error {
-	_, err := db.Exec(`
-	CREATE TABLE IF NOT EXISTS files (
-		path TEXT PRIMARY KEY,
-		name TEXT,
-		type TEXT,
-		creation_time TEXT,
-		modification_time TEXT,
-		hash TEXT,
-		size INTEGER,
-		dir INTEGER DEFAULT 0,
-		symlink TEXT DEFAULT '',
-		exclusion_pattern TEXT DEFAULT NULL,
-		error TEXT DEFAULT NULL,
-		folder_id INTEGER DEFAULT NULL REFERENCES folders(id)
-	);
-
-	CREATE INDEX IF NOT EXISTS hash_idx ON files(hash);
-
-	CREATE TABLE IF NOT EXISTS folders (
-		id INTEGER PRIMARY KEY,	    		
-	    path TEXT UNIQUE,
-	    parent_id INTEGER DEFAULT NULL
-	);
-
-
-	`)
-	return err
 }
