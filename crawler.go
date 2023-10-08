@@ -21,6 +21,7 @@ func main() {
 	var printInterval int
 	var printErrors bool
 	var retryErrors bool
+	var extraLogging bool
 
 	flag.StringVar(&dbFile, "db", "index.sqlite", "Path to the SQLite database file")
 	flag.StringVar(&exclusionFile, "exclude", "", "Path to the exclusion file")
@@ -28,6 +29,7 @@ func main() {
 	flag.BoolVar(&printErrors, "print-errors", false, "Print errors to stdout in addition to the log file")
 	flag.IntVar(&printInterval, "interval", 1, "Time interval for printing statistics in seconds")
 	flag.BoolVar(&retryErrors, "retry", false, "Retry files that previously caused errors")
+	flag.BoolVar(&extraLogging, "extra-logging", false, "Log extra information such as file read and hash generation speed")
 	flag.Parse()
 
 	if len(flag.Args()) < 1 {
@@ -110,7 +112,7 @@ func main() {
 
 	// Process each directory
 	for _, root := range flag.Args() {
-		err := processDirectory(root, db, stats, excludePatterns, retryErrors)
+		err := processDirectory(root, db, stats, excludePatterns, retryErrors, extraLogging)
 		if err != nil {
 			fmt.Printf("Error processing directory %s: %v\n", root, err)
 		}
@@ -118,7 +120,7 @@ func main() {
 }
 
 // processDirectory walks the directory tree and processes each file
-func processDirectory(root string, db *sql.DB, stats *ProcessStats, excludePatterns []string, retryErrors bool) error {
+func processDirectory(root string, db *sql.DB, stats *ProcessStats, excludePatterns []string, retryErrors bool, extraLogging bool) error {
 	root, err := filepath.Abs(root)
 	if err != nil {
 		log.Println("Error getting absolute path for root:", root, err)
@@ -175,7 +177,7 @@ func processDirectory(root string, db *sql.DB, stats *ProcessStats, excludePatte
 			return nil
 		}
 
-		if f.UpdateHash(db) != nil {
+		if f.UpdateHash(db, extraLogging) != nil {
 			return nil
 		}
 		f.WriteToDatabase(db)

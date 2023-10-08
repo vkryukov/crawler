@@ -149,7 +149,7 @@ func (f *FileInfo) UpdateInfo(db *sql.DB) error {
 	return err
 }
 
-func (f *FileInfo) UpdateHash(db *sql.DB) error {
+func (f *FileInfo) UpdateHash(db *sql.DB, extraLogging bool) error {
 	file, err := os.Open(f.Path.String)
 	if err != nil {
 		f.WriteError("opening file", err, db)
@@ -162,11 +162,38 @@ func (f *FileInfo) UpdateHash(db *sql.DB) error {
 		}
 	}(file)
 
+	sizeMb := float64(f.Size) / (1024 * 1024)
+
+	if extraLogging {
+		readStart := time.Now()
+		_, err = io.Copy(io.Discard, file)
+		if err != nil {
+			f.WriteError("reading file", err, db)
+			return err
+		}
+		readDuration := time.Since(readStart)
+		readSpeed := sizeMb / readDuration.Seconds() // MB/s
+		log.Printf("Read speed for %s [%.2f MB]: %.2f MB/s\n", f.Path.String, sizeMb, readSpeed)
+
+		// Reset file pointer to the beginning
+		_, err = file.Seek(0, 0)
+		if err != nil {
+			f.WriteError("seeking file", err, db)
+			return err
+		}
+	}
+
+	hashStart := time.Now()
 	hash := sha256.New()
 	_, err = io.Copy(hash, file)
 	if err != nil {
 		f.WriteError("hashing file", err, db)
 		return err
+	}
+	if extraLogging {
+		hashDuration := time.Since(hashStart)
+		hashSpeed := sizeMb / hashDuration.Seconds() // MB/s
+		log.Printf("Hash speed for %s [%.2f MB]: %.2f MB/s\n", f.Path.String, sizeMb, hashSpeed)
 	}
 	f.Hash = sql.NullString{String: fmt.Sprintf("%x", hash.Sum(nil)), Valid: true}
 	return nil
