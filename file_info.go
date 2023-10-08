@@ -78,7 +78,7 @@ func (f *FileInfo) WriteToDatabase(db *sql.DB) {
 	`, f.Path, f.Name, f.Type, f.CreationTime, f.ModificationTime, f.Hash, f.Size, f.Dir, f.Symlink,
 		f.ExclusionPattern, f.Error, f.FolderId)
 	if err != nil {
-		log.Println("Error inserting into database:", err)
+		log.Fatalln("Error inserting into database:", err)
 	}
 }
 
