@@ -55,6 +55,9 @@ func main() {
 			fmt.Println("Error closing log file:", err)
 		}
 	}(logFile)
+	if extraLogging {
+		log.SetFlags(log.Ltime | log.Lmicroseconds)
+	}
 
 	if printErrors {
 		// Log both to the file and stdout
