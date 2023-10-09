@@ -190,11 +190,11 @@ func (f *FileInfo) UpdateHash(db *sql.DB, extraLogging bool) error {
 		f.WriteError("hashing file", err, db)
 		return err
 	}
+	f.Hash = sql.NullString{String: fmt.Sprintf("%x", hash.Sum(nil)), Valid: true}
 	if extraLogging {
 		hashDuration := time.Since(hashStart)
 		hashSpeed := sizeMb / hashDuration.Seconds() // MB/s
 		log.Printf("Hash speed for %s [%.2f MB]: %.2f MB/s\n", f.Path.String, sizeMb, hashSpeed)
 	}
-	f.Hash = sql.NullString{String: fmt.Sprintf("%x", hash.Sum(nil)), Valid: true}
 	return nil
 }
