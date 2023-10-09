@@ -176,6 +176,7 @@ func processDirectory(root string, db *sql.DB, stats *ProcessStats, excludePatte
 			f.ExclusionPattern = sql.NullString{String: pattern, Valid: true}
 			f.WriteToDatabase(db)
 			stats.Update(path, f.Size)
+			debugLog("excluded: return")
 			return nil
 		}
 
