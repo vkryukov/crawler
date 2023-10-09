@@ -172,6 +172,7 @@ func processDirectory(root string, db *sql.DB, stats *ProcessStats, excludePatte
 		if match, pattern := isExcluded(path, excludePatterns); match {
 			f.ExclusionPattern = sql.NullString{String: pattern, Valid: true}
 			f.WriteToDatabase(db)
+			stats.Update(path, f.Size)
 			return nil
 		}
 
