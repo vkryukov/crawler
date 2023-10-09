@@ -127,25 +127,37 @@ func processDirectory(root string, db *sql.DB, stats *ProcessStats, excludePatte
 		return err
 	}
 
+	// debugLog takes one or more arguments and prints them if extraLogging is true
+	debugLog := func(a ...interface{}) {
+		if extraLogging {
+			log.Println(a...)
+		}
+	}
+
 	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		debugLog("Processing path:", path)
 		f := NewFileInfo(path, d)
+		debugLog("File info:", f)
 
 		if err != nil {
 			f.WriteError("walking file:", err, db)
 			return nil
 		}
 
+		debugLog("trying to retry errors")
 		// Skip files that previously caused errors
 		if !retryErrors {
 			var storedError string
 			err = db.QueryRow(
 				"SELECT error FROM files WHERE path=? AND error IS NOT NULL",
 				path).Scan(&storedError)
+			debugLog("stored error:", storedError)
 			if err == nil {
 				return nil
 			}
 		}
 
+		debugLog("updating folder id and info")
 		if f.UpdateFolderId(db) != nil || f.UpdateInfo(db) != nil {
 			return nil
 		}
@@ -156,21 +168,25 @@ func processDirectory(root string, db *sql.DB, stats *ProcessStats, excludePatte
 			return nil
 		}
 
+		debugLog("checking if excluded")
 		if match, pattern := isExcluded(path, excludePatterns); match {
 			f.ExclusionPattern = sql.NullString{String: pattern, Valid: true}
 			f.WriteToDatabase(db)
 			return nil
 		}
 
+		debugLog("checking if directory or symlink")
 		if f.Dir || f.Symlink.String != "" {
 			f.WriteToDatabase(db)
 			return nil
 		}
 
+		debugLog("updating statistics")
 		// Update statistics
 		stats.Update(path, f.Size)
 
 		// Check if file already exists in database
+		debugLog("retrieving modification time")
 		var storedModTime string
 		err = db.QueryRow("SELECT modification_time FROM files WHERE path=?", path).Scan(&storedModTime)
 		if extraLogging {
@@ -180,10 +196,12 @@ func processDirectory(root string, db *sql.DB, stats *ProcessStats, excludePatte
 			return nil
 		}
 
+		debugLog("updating hash")
 		if f.UpdateHash(db, extraLogging) != nil {
 			return nil
 		}
 		f.WriteToDatabase(db)
+		debugLog("done")
 		return nil
 	})
 }
