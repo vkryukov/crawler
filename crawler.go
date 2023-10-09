@@ -173,6 +173,9 @@ func processDirectory(root string, db *sql.DB, stats *ProcessStats, excludePatte
 		// Check if file already exists in database
 		var storedModTime string
 		err = db.QueryRow("SELECT modification_time FROM files WHERE path=?", path).Scan(&storedModTime)
+		if extraLogging {
+			log.Println("Path: ", f.Path.String, "stored mod time: ", storedModTime, "new mod time: ", f.ModificationTime.String)
+		}
 		if err == nil && storedModTime == f.ModificationTime.String {
 			return nil
 		}
