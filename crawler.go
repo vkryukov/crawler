@@ -147,6 +147,18 @@ func processDirectory(root string, db *sql.DB, stats *ProcessStats, excludePatte
 			return nil
 		}
 
+		// Check if file already exists in database
+		debugLog("retrieving modification time")
+		var storedModTime string
+		err = db.QueryRow("SELECT modification_time FROM files WHERE path=?", path).Scan(&storedModTime)
+		if extraLogging {
+			log.Println("Path: ", f.Path.String, "stored mod time: ", storedModTime, "new mod time: ", f.ModificationTime.String)
+		}
+		if err == nil && storedModTime == f.ModificationTime.String {
+			debugLog("file already exists in database: ", path)
+			return nil
+		}
+
 		debugLog("trying to retry errors")
 		// Skip files that previously caused errors
 		if !retryErrors {
@@ -189,17 +201,6 @@ func processDirectory(root string, db *sql.DB, stats *ProcessStats, excludePatte
 		debugLog("updating statistics")
 		// Update statistics
 		stats.Update(path, f.Size)
-
-		// Check if file already exists in database
-		debugLog("retrieving modification time")
-		var storedModTime string
-		err = db.QueryRow("SELECT modification_time FROM files WHERE path=?", path).Scan(&storedModTime)
-		if extraLogging {
-			log.Println("Path: ", f.Path.String, "stored mod time: ", storedModTime, "new mod time: ", f.ModificationTime.String)
-		}
-		if err == nil && storedModTime == f.ModificationTime.String {
-			return nil
-		}
 
 		debugLog("updating hash")
 		if f.UpdateHash(db, extraLogging) != nil {
